@@ -110,10 +110,10 @@ if not mysql_ear.exists():
     with zipfile.ZipFile(zip_path) as z:
         with open(mysql_ear, "wb") as f:
             f.write(z.read(f"dcm4chee-arc-{VERSION}-mysql/deploy/dcm4chee-arc-ear-{VERSION}-mysql.ear"))
-    (build.parent / "initdb").mkdir(exist_ok=True)
-    create_sql = build.parent / "initdb" / "create-mysql.sql"
-    if not create_sql.exists():
-        create_sql.write_bytes(z.read(f"dcm4chee-arc-{VERSION}-mysql/sql/mysql/create-mysql.sql"))
+        create_sql = build.parent / "initdb" / "create-mysql.sql"
+        if not create_sql.exists():
+            (build.parent / "initdb").mkdir(exist_ok=True)
+            create_sql.write_bytes(z.read(f"dcm4chee-arc-{VERSION}-mysql/sql/mysql/create-mysql.sql"))
     print("extracted the mysql EAR and create-mysql.sql")
 
 connector = build / "mysql-module" / "mysql-connector-j-9.3.0.jar"
