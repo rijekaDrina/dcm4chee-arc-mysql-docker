@@ -203,7 +203,8 @@ def ensure_ui_war() -> None:
     war.parent.mkdir(exist_ok=True)
     sh("docker", "create", "--name", "tmp-ui-source", "dcm4che/dcm4chee-arc-psql:5.35.1-secure")
     try:
-        sh("docker", "cp", "tmp-ui-source:/opt/wildfly/standalone/deployments/"
+        # a created (never started) container only carries the war in /docker-entrypoint.d
+        sh("docker", "cp", "tmp-ui-source:/docker-entrypoint.d/deployments/"
             "dcm4chee-arc-ui2-5.35.1-secure.war", str(war))
     finally:
         sh("docker", "rm", "tmp-ui-source")
