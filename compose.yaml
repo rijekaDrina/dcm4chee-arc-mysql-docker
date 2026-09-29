@@ -1,0 +1,160 @@
+name: dcm4chee-mysql
+
+services:
+  ldap:
+    image: dcm4che/slapd-dcm4chee:2.6.13-35.1
+    restart: unless-stopped
+    environment:
+      STORAGE_DIR: /storage/fs1
+      LDAP_ROOTPASS: ${LDAP_ROOT_PASSWORD:?set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost:389 -b dc=dcm4che,dc=org -s base >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    volumes:
+      - ./data/ldap:/var/lib/openldap/openldap-data:Z
+      - ./data/slapd:/etc/openldap/slapd.d:Z
+      - ./data/storage:/storage:Z
+    expose:
+      - "389"
+    networks: [pacs]
+    mem_limit: 256m
+
+  mariadb:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set in .env}
+      MARIADB_DATABASE: keycloak
+      MARIADB_USER: keycloak
+      MARIADB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in .env}
+    volumes:
+      - ./data/mariadb:/var/lib/mysql:Z
+    networks: [pacs]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  keycloak:
+    image: dcm4che/keycloak:25.0.6
+    restart: unless-stopped
+    depends_on:
+      ldap:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    environment:
+      KC_HTTPS_PORT: 8843
+      KC_HOSTNAME: https://${PUBLIC_HOST}:8844
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTPS_KEY_STORE_FILE: /run/certs/keycloak.p12
+      KC_HTTPS_KEY_STORE_PASSWORD: ${TLS_KEYSTORE_PASSWORD:?set in .env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?set in .env}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?set in .env}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
+      KC_DB: mariadb
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_URL_HOST: mariadb
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in .env}
+      EXTRA_CACERTS: /run/certs/ca.p12
+      EXTRA_CACERTS_PASSWORD: ${EXTRA_CACERTS_PASSWORD:?set in .env}
+      ARCHIVE_HOST: ${PUBLIC_HOST}
+      LDAP_ROOTPASS: ${LDAP_ROOT_PASSWORD:?set in .env}
+      KEYCLOAK_WAIT_FOR: "ldap:389 mariadb:3306"
+      JAVA_OPTS_APPEND: -Xms128m -Xmx512m
+    ports:
+      - "${PUBLIC_BIND_IP}:8844:8843"
+    volumes:
+      - ./data/keycloak:/opt/keycloak/data:Z
+      - ./certs/keycloak.p12:/run/certs/keycloak.p12:ro,Z
+      - ./certs/ca.p12:/run/certs/ca.p12:ro,Z
+    networks: [pacs]
+    mem_limit: 896m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:8843/ >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in .env}
+      MYSQL_DATABASE: pacsdb
+      MYSQL_USER: pacs
+      MYSQL_PASSWORD: ${PACS_DB_PASSWORD:?set in .env}
+    volumes:
+      - ./data/mysql:/var/lib/mysql:Z
+      - ./my.cnf:/etc/mysql/conf.d/pacs-tuning.cnf:ro,Z
+      - ./initdb:/docker-entrypoint-initdb.d:ro,Z
+    networks: [pacs]
+    mem_limit: 1280m
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent && [ $$(mysql -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD -N -e \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='pacsdb'\" 2>/dev/null) -gt 0 ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  arc:
+    image: dcm4chee-arc-mysql:5.35.1-secure
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      ldap:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      MYSQL_DB: pacsdb
+      MYSQL_USER: pacs
+      MYSQL_PASSWORD: ${PACS_DB_PASSWORD:?set in .env}
+      MYSQL_JDBC_PARAMS: useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      LDAP_ROOTPASS: ${LDAP_ROOT_PASSWORD:?set in .env}
+      AUTH_SERVER_URL: https://keycloak:8843
+      UI_AUTH_SERVER_URL: https://${PUBLIC_HOST}:8844
+      WILDFLY_WAIT_FOR: "ldap:389 mysql:3306 keycloak:8843"
+      WILDFLY_CHOWN: /storage
+      KEYSTORE: /run/certs/arc.p12
+      KEYSTORE_PASSWORD: ${TLS_KEYSTORE_PASSWORD:?set in .env}
+      KEY_PASSWORD: ${TLS_KEYSTORE_PASSWORD:?set in .env}
+      EXTRA_CACERTS: /run/certs/ca.p12
+      EXTRA_CACERTS_PASSWORD: ${EXTRA_CACERTS_PASSWORD:?set in .env}
+      JAVA_OPTS_APPEND: -Xms512m -Xmx1024m
+    ports:
+      - "${PUBLIC_BIND_IP}:8444:8443"
+      - "${PUBLIC_BIND_IP}:9994:9993"
+      - "${PUBLIC_BIND_IP}:11113:11112"
+      - "${PUBLIC_BIND_IP}:2763:2762"
+      - "${PUBLIC_BIND_IP}:2576:2575"
+      - "${PUBLIC_BIND_IP}:12576:12575"
+    volumes:
+      - ./data/wildfly:/opt/wildfly/standalone:Z
+      - ./build/archive-ui.war:/opt/wildfly/standalone/deployments/dcm4chee-arc-ui2-5.35.1-secure.war:ro,Z
+      - ./data/storage:/storage:Z
+      - ./certs/arc.p12:/run/certs/arc.p12:ro,Z
+      - ./certs/ca.p12:/run/certs/ca.p12:ro,Z
+      - ./certs/ca.crt:/run/certs/ca.crt:ro,Z
+    networks: [pacs]
+    mem_limit: 1536m
+
+networks:
+  pacs:

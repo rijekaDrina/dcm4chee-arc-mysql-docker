@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Assemble and build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Assemble mysql-secure EAR and patched configs
+        run: python3 build/build-image.py
+
+      - name: Build image
+        run: docker build -t dcm4chee-arc-mysql:ci build/
+
+      - name: Assert image contents
+        run: |
+          docker run --rm --entrypoint=/bin/sh dcm4chee-arc-mysql:ci -c '
+            ls /docker-entrypoint.d/deployments/dcm4chee-arc-ear-5.35.1-mysql-secure.ear
+            grep -q "jdbc:mysql" /docker-entrypoint.d/configuration/dcm4chee-arc-oidc.xml
+            grep -q "export MYSQL_JDBC_PARAMS" /setenv.sh
+            ls /opt/wildfly/modules/com/mysql/main/mysql-connector-j-9.3.0.jar
+            ! grep -rq "org.postgresql" /docker-entrypoint.d/configuration/dcm4chee-arc-oidc.xml
+          '
+
+      - name: Validate compose file
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+  e2e:
+    name: End-to-end smoke test (full stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pynetdicom pydicom
+
+      - name: Deploy stack
+        run: |
+          python3 deploy.py --yes --hostname localhost --bind-ip 127.0.0.1 \
+            --kc-admin kcadmin
+
+      - name: DICOM C-ECHO
+        run: |
+          python3 - <<'EOF'
+          from pynetdicom import AE
+          from pynetdicom.sop_class import Verification
+          ae = AE(ae_title=b"CITU")
+          ae.add_requested_context(Verification)
+          assoc = ae.associate("127.0.0.1", 11113, ae_title=b"DCM4CHEE")
+          assert assoc.is_established, "association failed"
+          status = assoc.send_c_echo()
+          assert status and status.Status == 0x0000, f"C-ECHO failed: {status}"
+          assoc.release()
+          print("C-ECHO OK")
+          EOF
+
+      - name: QIDO-RS with OIDC token
+        run: |
+          PW=$(grep -E "^password_pacsadmin=" secrets/INITIAL_CREDENTIALS.txt | cut -d= -f2-)
+          TOKEN=$(curl -fsS --cacert certs/ca.crt -X POST \
+            https://localhost:8844/realms/dcm4che/protocol/openid-connect/token \
+            -d grant_type=password -d client_id=dcm4chee-arc-ui \
+            -d username=pacsadmin -d "password=$PW" | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cacert certs/ca.crt \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/dicom+json" \
+            https://localhost:8444/dcm4chee-arc/aets/DCM4CHEE/rs/studies)
+          echo "QIDO status: $CODE"
+          test "$CODE" = "200"

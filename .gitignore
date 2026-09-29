@@ -1,0 +1,24 @@
+# secrets and generated state — never commit
+.env
+secrets/
+certs/
+client/
+data/
+dist/
+
+# build inputs fetched at build time and derived artifacts
+build/work/
+build/orig/
+build/patched/
+build/mysql-module/*.jar
+initdb/create-mysql.sql
+build/archive-ui*.war
+
+# python
+__pycache__/
+*.pyc
+
+# editors
+*.swp
+.idea/
+.vscode/
