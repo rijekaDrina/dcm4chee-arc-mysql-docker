@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import os
 import secrets as pysecrets
 import shutil
 import socket
@@ -178,7 +179,9 @@ def generate_certs(hostname: str, tls_pass: str) -> None:
         run("openssl", "pkcs12", "-export", "-out", f"{name}.p12",
             "-inkey", "tls.key", "-in", "tls.crt", "-certfile", "ca.crt",
             "-name", name, "-passout", f"pass:{tls_pass}")
-    sh("docker", "run", "--rm", "-v", f"{CERTS}:/certs:Z", "--entrypoint", "/usr/bin/keytool",
+    # run keytool as the invoking user so the produced ca.p12 is chown-able afterwards
+    sh("docker", "run", "--rm", "-u", f"{os.getuid()}:{os.getgid()}",
+       "-v", f"{CERTS}:/certs:Z", "--entrypoint", "/usr/bin/keytool",
        "dcm4che/dcm4chee-arc-psql:5.35.1-secure",
        "-importcert", "-noprompt", "-alias", "test-ca",
        "-file", "/certs/ca.crt", "-keystore", "/certs/ca.p12",
