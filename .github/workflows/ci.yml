@@ -75,7 +75,50 @@ jobs:
           print("C-ECHO OK")
           EOF
 
-      - name: QIDO-RS with OIDC token
+      - name: DICOM C-STORE (synthetic Secondary Capture)
+        run: |
+          python3 - <<'EOF'
+          from pydicom.dataset import Dataset, FileMetaDataset
+          from pydicom.uid import SecondaryCaptureImageStorage, ImplicitVRLittleEndian, generate_uid
+          from pynetdicom import AE
+          from pynetdicom.sop_class import SecondaryCaptureImageStorage
+
+          ds = Dataset()
+          ds.SOPClassUID = SecondaryCaptureImageStorage
+          ds.SOPInstanceUID = generate_uid()
+          ds.Modality = "OT"
+          ds.PatientName = "CI^TEST"
+          ds.PatientID = "CI-TEST"
+          ds.StudyInstanceUID = generate_uid()
+          ds.SeriesInstanceUID = generate_uid()
+          ds.SeriesNumber = 1
+          ds.InstanceNumber = 1
+          ds.SamplesPerPixel = 1
+          ds.PhotometricInterpretation = "MONOCHROME2"
+          ds.Rows = 1
+          ds.Columns = 1
+          ds.BitsAllocated = 8
+          ds.BitsStored = 8
+          ds.HighBit = 7
+          ds.PixelRepresentation = 0
+          ds.PixelData = b"\x00"
+          fm = FileMetaDataset()
+          fm.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+          fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+          fm.TransferSyntaxUID = ImplicitVRLittleEndian
+          ds.file_meta = fm
+
+          ae = AE(ae_title=b"CITU")
+          ae.add_requested_context(SecondaryCaptureImageStorage, ImplicitVRLittleEndian)
+          assoc = ae.associate("127.0.0.1", 11113, ae_title=b"DCM4CHEE")
+          assert assoc.is_established, "association failed"
+          status = assoc.send_c_store(ds)
+          assoc.release()
+          assert status and status.Status == 0x0000, f"C-STORE failed: {status}"
+          print("C-STORE OK:", ds.StudyInstanceUID)
+          EOF
+
+      - name: QIDO-RS with OIDC token (expect the stored study)
         run: |
           PW=$(grep -E "^password_pacsadmin=" secrets/INITIAL_CREDENTIALS.txt | cut -d= -f2-)
           TOKEN=$(curl -fsS --cacert certs/ca.crt -X POST \
