@@ -111,9 +111,9 @@ python3 deploy.py [--dry-run] [--yes] [--hostname H] [--bind-ip IP]
   (or reuses certificates from another deployment via `--reuse-certs-from`)
 - builds the image, `docker compose up -d`, waits for real health (container
   healthchecks + `WFLYSRV0025` in the WildFly log)
-- runs `scripts/fix-ldap-bind.py` (Keycloak realm-import does not substitute
-  `${LDAP_ROOTPASS}`; the script writes the real bind password via the Admin API),
-  then `configure-users.py` (creates a PACS admin, rotates all built-in passwords)
+- runs `scripts/fix-ldap-bind.py` (repairs the LDAP federation bind credential if
+  the LDAP root password ever changed after realm import), then
+  `configure-users.py` (creates a PACS admin, rotates all built-in passwords)
   and `apply-ldap-config.py` (UI languages, DICOM TLS ciphers, console callback)
 - re-runs over an existing installation are safe: secrets, certificates and data
   are never touched; `--reconfigure` re-applies users/languages
@@ -129,9 +129,9 @@ make-bundle.sh                       # portable tar.gz for a one-command install
 
 ## Documentation
 
-- [`docs/upstream/`](docs/upstream/) — drafts of upstream bug reports
-  (JDBC parameters export bug, Keycloak `${LDAP_ROOTPASS}` substitution) with
-  reproductions and fixes; filed against dcm4che-dockerfiles / dcm4che keycloak.
+- [`docs/upstream/`](docs/upstream/) — write-up of the upstream
+  `POSTGRES_JDBC_PARAMS` export bug with reproduction and fix
+  (filed as dcm4che-dockerfiles/dcm4chee-arc-psql#26).
 
 ## Status & support
 

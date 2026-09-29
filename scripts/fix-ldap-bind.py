@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Set the realm dcm4che LDAP federation bind password from .env.
+"""Rewrite the realm dcm4che LDAP federation bind credential from .env.
 
-Keycloak's --import-realm placeholder resolution does not reliably substitute
-${LDAP_ROOTPASS} in dcm4che-realm.json, so a freshly imported realm would keep
-an unusable bind credential when the LDAP root password is not the upstream
-default ('secret'). This script writes the real password into the stored
-UserStorageProvider component. It is idempotent and safe to re-run.
+A fresh `--import-realm` correctly substitutes ${LDAP_ROOTPASS} from the
+environment. The stored credential only goes stale when the LDAP root password
+is rotated after the initial import, or when a realm/database from a mismatched
+setup is restored. This script rewrites the bind credential from LDAP_ROOTPASS
+in .env so such deployments recover without re-importing. Safe to re-run.
 """
 from pathlib import Path
 import json
