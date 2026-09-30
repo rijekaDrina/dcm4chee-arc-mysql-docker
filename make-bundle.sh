@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a portable bundle of this stack for a new machine.
 # Usage: ./make-bundle.sh [--full]
-#   default: without build/work (the 109 MB SourceForge zip) — deploy.py downloads it
+#   default: omit build/work; deploy.py downloads those inputs later
 #   --full : include cached build/work artifacts (Docker images still need pulling)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -36,7 +36,7 @@ ARGS=(
 # ones on the new machine (certificates are reused only via --reuse-certs-from).
 
 if [ "$FULL" -eq 0 ]; then
-  echo "Packing bundle (without build/work — the new machine needs internet for SourceForge/Maven)."
+  echo "Packing bundle without cached build downloads. The new machine will need internet access."
   ARGS+=(--exclude='./build/work')
 else
   echo "Packing bundle with cached build/work artifacts (Docker images still need pulling)."

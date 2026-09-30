@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""deploy.py — interactive installer for the DCM4CHEE PACS stack on MySQL.
+"""deploy.py: interactive installer for the DCM4CHEE PACS stack on MySQL.
 
 Brings up dcm4chee-arc 5.35.1-secure + Keycloak 25 + LDAP + MariaDB + MySQL 8.4.
 All you need on a new machine is this project and Docker (deploy.py installs
@@ -157,8 +157,8 @@ def read_public_env() -> tuple[str, str]:
 
 def reuse_source_certs(source: Path) -> str:
     """Copy certs from another stack installation; returns its TLS keystore password."""
-    needed = ("ca.crt", "ca.p12", "arc.p12", "keycloak.p12",
-              "test-client.p12", "test-client.crt", "test-client.key")
+    needed = ("ca.crt", "ca.p12", "arc.p12", "keycloak.p12")
+    optional = ("test-client.p12", "test-client.crt", "test-client.key")
     source_env = source / ".env"
     missing = [str(source / "certs" / name) for name in needed
                if not (source / "certs" / name).is_file()]
@@ -172,6 +172,9 @@ def reuse_source_certs(source: Path) -> str:
         raise SystemExit(f"{source_env} has no TLS_KEYSTORE_PASSWORD")
     for name in needed:
         shutil.copy2(source / "certs" / name, CERTS / name)
+    for name in optional:
+        if (source / "certs" / name).is_file():
+            shutil.copy2(source / "certs" / name, CERTS / name)
     for path in CERTS.glob("*.p12"):
         path.chmod(0o644)
     (CERTS / "ca.crt").chmod(0o600)
@@ -276,7 +279,7 @@ def ensure_prerequisites(unattended: bool) -> None:
     print(f"Missing tools: {', '.join(missing)}")
     family = os_family()
     if family == "unknown":
-        raise SystemExit("Unknown OS — install manually: docker-ce, docker-compose-plugin, openssl, iproute2.")
+        raise SystemExit("Unknown OS. Install docker-ce, docker-compose-plugin, openssl and iproute2 manually.")
     if not (unattended or ask_yes_no("Install them automatically (dnf/apt)?", True)):
         raise SystemExit("Install the tools manually, then run deploy.py again.")
     if family == "rhel":
@@ -366,9 +369,9 @@ def main() -> None:
         busy = ports_free(bind_ip)
         foreign_busy = sorted(set(busy) - project_published_ports()) if redeploy else busy
         if foreign_busy:
-            raise SystemExit(f"ports busy on {bind_ip}: {foreign_busy} — this stack needs: {STACK_PORTS}")
+            raise SystemExit(f"Ports {foreign_busy} are busy on {bind_ip}. Required ports: {STACK_PORTS}")
         if busy:
-            print(f"Ports {sorted(set(busy))} are held by this very stack (re-deploy) — fine.")
+            print(f"Ports {sorted(set(busy))} are already used by this stack.")
         print(f"OK: Docker is running; {hostname} ({bind_ip}); ports {STACK_PORTS} are free.")
 
     hr("2/7 Secrets and certificates")
@@ -376,7 +379,7 @@ def main() -> None:
         CERTS.mkdir(mode=0o700, exist_ok=True)
         SECRETS_DIR.mkdir(mode=0o700, exist_ok=True)
     if redeploy:
-        print(".env exists — re-deploy: secrets, certificates and data are NOT touched.")
+        print("Existing .env found. Keeping secrets, certificates and data.")
     elif args.dry_run:
         print("(dry-run) would create .env with fresh passwords and "
               + (f"reuse-ovao sertifikate iz {args.reuse_certs_from}." if args.reuse_certs_from
@@ -433,11 +436,11 @@ def main() -> None:
         for name, timeout in (("dcm4chee-mysql-ldap-1", 180), ("dcm4chee-mysql-mariadb-1", 180),
                               ("dcm4chee-mysql-mysql-1", 600), ("dcm4chee-mysql-keycloak-1", 600)):
             if not wait_container_healthy(name, timeout):
-                raise SystemExit(f"{name} nije zdrav — pogledaj: docker compose logs")
+                raise SystemExit(f"{name} is not healthy. Check docker compose logs.")
             print(f"  {name}: healthy")
         print("Waiting for the archive to come up (WildFly WFLYSRV0025)...")
         if not wait_arc_started(bind_ip):
-            raise SystemExit("Archive did not start — check: docker compose logs arc ; "
+            raise SystemExit("Archive did not start. Check docker compose logs arc and "
                              "docker compose exec arc tail -100 /opt/wildfly/standalone/log/server.log")
 
     hr("6/7 Initial configuration")
@@ -456,7 +459,7 @@ def main() -> None:
             sh("docker", "compose", "restart", "arc")
             print("Waiting for the archive to restart...")
             if not wait_arc_started(bind_ip):
-                raise SystemExit("Archive did not come back after restart — check the log.")
+                raise SystemExit("Archive did not come back after restart. Check the arc log.")
             print("Users and DICOM TLS configured; passwords are in secrets/INITIAL_CREDENTIALS.txt.")
         else:
             print("Re-deploy: users and passwords were not touched (use --reconfigure for that).")

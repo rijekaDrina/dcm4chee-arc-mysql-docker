@@ -13,9 +13,8 @@ The repository itself contains no dcm4che binaries.
 dcm4chee-arc-light is tri-licensed MPL 1.1 / GPL 2.0 or later / LGPL 2.1 or later,
 © dcm4che contributors and J4Care.
 
-The file `build/patched/setenv.sh` (generated at build time from the upstream
-image's `/setenv.sh`, and committed in generated form inside released bundles)
-is a modification of an MPL-licensed file; the modified file is published in
-full in this repository, satisfying MPL 1.1 §3.1.
+`build/build-image.py` generates `build/patched/setenv.sh` locally from the
+upstream image's `/setenv.sh`. The generated file is ignored by Git and is not
+included in this source checkout. A bundle made after a build can include it.
 
 This project is not affiliated with or endorsed by the dcm4che project.

@@ -1,4 +1,4 @@
-# Upstream bug report draft — dcm4che-dockerfiles
+# Upstream bug report draft: dcm4che-dockerfiles
 
 **Repo:** dcm4che-dockerfiles/dcm4chee-arc-psql (affects all dcm4chee-arc image variants)
 **Title:** `POSTGRES_JDBC_PARAMS` is never exported, so JDBC URL parameters are glued

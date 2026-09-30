@@ -1,159 +1,156 @@
-# dcm4chee-arc-mysql-docker
+# dcm4chee-arc with MySQL in Docker
 
-Dockerized **dcm4chee-arc-light 5.35.1 (secure)** PACS archive backed by **MySQL 8.4 LTS**
-instead of PostgreSQL — with Keycloak (OIDC), OpenLDAP, TLS everywhere, an interactive
-installer, health-checked orchestration, and end-to-end smoke tests.
+This project runs dcm4chee-arc-light 5.35.1 with MySQL 8.4. It combines the
+official MySQL archive distribution with the secure components from dcm4che's
+PostgreSQL Docker image. The stack also runs Keycloak, OpenLDAP and a separate
+MariaDB database for Keycloak.
 
-[![CI](https://github.com/rijekaDrina/dcm4chee-arc-mysql-docker/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+The goal is to provide a repeatable Docker setup for teams that need the archive
+database on MySQL. The upstream Docker image uses PostgreSQL, although the
+upstream distribution includes a MySQL EAR and schema.
 
-## Why this exists
+[![CI](https://github.com/rijekaDrina/dcm4chee-arc-mysql-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/rijekaDrina/dcm4chee-arc-mysql-docker/actions/workflows/ci.yml)
 
-dcm4che officially supports MySQL for the archive database (they ship `create-mysql.sql`,
-MySQL entity jars and update scripts in every release), but their **prebuilt Docker images
-are PostgreSQL-only**. Teams whose DBA knowledge is MySQL/MariaDB — common in hospitals —
-are left with a bare-metal WildFly install and no secure Docker path.
+## Before you start
 
-This repository closes that gap with a fully scripted, reproducible packaging:
+- Use a Linux host with roughly 6 GiB of RAM or more. The stack was tested on
+  AlmaLinux 9. The installer has package installation paths for RHEL-based
+  systems, Debian and Ubuntu.
+- You need Python 3, internet access for the first build, and permission to run
+  Docker. If Docker, Compose, OpenSSL or `ip` is missing, `deploy.py` can install
+  it, but package installation requires root privileges.
+- Choose a DNS name that clients can resolve to the host's bind IP. The
+  generated test certificate contains that DNS name. A client using another
+  name or the raw IP will see a certificate name mismatch.
+- Check that ports 8444, 8844, 9994, 11113, 2763, 2576 and 12576 are free on
+  the chosen bind IP.
 
-- `dcm4chee-arc-mysql:5.35.1-secure` image assembled **from official artifacts only**
-  (the psql-secure image + the official `5.35.1-mysql` EAR distribution + MySQL
-  Connector/J from Maven Central) — see [How the image is built](#how-the-image-is-built).
-- The **secure** feature set of the official image: HTTPS UI, OIDC login via Keycloak,
-  TLS keystores, DICOM TLS with client certificates.
-- **MySQL 8.4** with PACS-oriented tuning (`my.cnf`), `utf8mb4/utf8mb4_bin`,
-  `skip-log-bin`, SSD-friendly flushing, memory limits sized for small hosts.
-- Health-checked `docker compose` stack: the archive starts only after LDAP, MySQL
-  (schema present) and Keycloak are healthy.
-- **`deploy.py`** — an interactive installer that detects and installs missing tools
-  (Docker Engine, openssl, iproute) on RHEL/AlmaLinux and Debian/Ubuntu, generates
-  secrets and a test CA, builds the image, brings the stack up and configures users
-  and DICOM TLS.
-- Live `mysqldump`-based backup script and a portable bundle builder
-  (`make-bundle.sh`) for one-command installs on a new machine.
-
-## Quick start
-
-Requirements: a Linux host (tested on AlmaLinux 9; ~6 GiB RAM), root access, internet.
-`deploy.py` installs Docker itself if it is missing.
+## Install
 
 ```sh
 git clone https://github.com/rijekaDrina/dcm4chee-arc-mysql-docker.git
 cd dcm4chee-arc-mysql-docker
-python3 deploy.py            # interactive; --dry-run to preview, --yes for defaults
+python3 deploy.py --dry-run --hostname pacs.example.com --bind-ip 192.0.2.10
+python3 deploy.py --hostname pacs.example.com --bind-ip 192.0.2.10
 ```
 
-When it finishes it prints all URLs and writes every generated password to
-`secrets/INITIAL_CREDENTIALS.txt` (mode 600):
+Replace the example hostname and IP with values for your host. The installer
+creates `.env`, certificates and credentials, assembles the image, starts the
+Compose stack and configures the PACS users. It can take several minutes on the
+first run because it downloads the upstream image and MySQL distribution.
 
-| What | Where |
-| --- | --- |
-| PACS UI | `https://<host>:8444/dcm4chee-arc/ui2` |
-| Keycloak admin | `https://<host>:8844/admin/` |
-| WildFly console | `https://<host>:9994/console/index.html` |
-| DICOM C-ECHO / C-STORE | `<host>:11113`, AE title `DCM4CHEE` |
-| DICOM TLS (client cert required) | `<host>:2763` |
-| HL7 MLLP / TLS | `<host>:2576` / `12576` |
-| DICOMweb (QIDO/STOW/WADO) | `https://<host>:8444/dcm4chee-arc/aets/DCM4CHEE/rs` |
+`--dry-run` prints the planned steps without creating files or starting
+containers. For unattended installation, use `--yes` together with an explicit
+`--hostname` and `--bind-ip`. Without those options, `--yes` uses
+`pacs.example.com` and an automatically detected IP.
 
-Connect with any DICOM viewer (e.g. Horos, MicroDicom, dcm4che's `storescu`) to
-`<host>:11113` with AE title `DCM4CHEE`.
-
-## How the image is built
-
-There is no official MySQL flavor of the secure image, and simply pointing the
-datasource at MySQL is **not enough**: the EAR ships a vendor-specific entity jar whose
-`persistence.xml` pins `database-product-name` and the ID-generation strategy
-(sequences on PostgreSQL, `AUTO_INCREMENT` identity on MySQL).
-
-`build/build-image.py` therefore:
-
-1. pulls the official `dcm4che/dcm4chee-arc-psql:5.35.1-secure` image and extracts its
-   EAR, `setenv.sh` and WildFly configuration templates;
-2. downloads the official `dcm4chee-arc-5.35.1-mysql.zip` distribution (SourceForge)
-   and takes its EAR (consistent manifest `Class-Path` for the MySQL entity jar);
-3. swaps the two **secure** wars (archive + proxy) from the psql-secure EAR into the
-   MySQL EAR and fixes `application.xml` / `jboss-deployment-structure.xml`;
-4. patches the `dcm4chee-arc*.xml` configurations so `java:/PacsDS` uses
-   `jdbc:mysql://${env.MYSQL_HOST}:${env.MYSQL_PORT}/${env.MYSQL_DB}${env.MYSQL_JDBC_PARAMS}`
-   with the `com.mysql` module (Connector/J 9.3.0) and IronJacamar MySQL
-   validation classes;
-5. patches `setenv.sh` with `MYSQL_*` defaults and **exports** `MYSQL_JDBC_PARAMS`
-   with a leading `?` — fixing an upstream bug where JDBC parameters were silently
-   ignored (they were glued onto the URL without `?`; the same bug affects
-   `POSTGRES_JDBC_PARAMS` in the official image — see `docs/upstream/`).
-
-All inputs are fetched at build time, so the repository contains no third-party
-binaries. `docker build` then layers the module, patched configs and the assembled
-`dcm4chee-arc-ear-5.35.1-mysql-secure.ear` onto the official base image.
-
-## Services
-
-| Service | Image | Notes |
-| --- | --- | --- |
-| `mysql` | `mysql:8.4` | `pacsdb`, schema auto-applied from `initdb/create-mysql.sql`, tuned via `my.cnf` |
-| `ldap` | `dcm4che/slapd-dcm4chee` | archive configuration + users, custom root password |
-| `mariadb` | `mariadb:10.11` | Keycloak's database (as in the official setup) |
-| `keycloak` | `dcm4che/keycloak:25.0.6` | realm `dcm4che`, HTTPS |
-| `arc` | `dcm4chee-arc-mysql:5.35.1-secure` | this project's image; memory-capped, `nofile` 65536 |
-
-Secrets live in `.env` (mode 600, generated). Nothing is published on host ports
-except the HTTPS/DICOM/HL7 ports above, bound to `PUBLIC_BIND_IP`.
-
-## deploy.py
-
-```
-python3 deploy.py [--dry-run] [--yes] [--hostname H] [--bind-ip IP]
-                  [--kc-admin USER] [--reuse-certs-from DIR] [--reconfigure]
-```
-
-- installs missing prerequisites (docker-ce, compose plugin, openssl, iproute)
-- first run: generates `.env` secrets, a test CA and server certificate
-  (or reuses certificates from another deployment via `--reuse-certs-from`)
-- builds the image, `docker compose up -d`, waits for real health (container
-  healthchecks + `WFLYSRV0025` in the WildFly log)
-- runs `scripts/fix-ldap-bind.py` (repairs the LDAP federation bind credential if
-  the LDAP root password ever changed after realm import), then
-  `configure-users.py` (creates a PACS admin, rotates all built-in passwords)
-  and `apply-ldap-config.py` (UI languages, DICOM TLS ciphers, console callback)
-- re-runs over an existing installation are safe: secrets, certificates and data
-  are never touched; `--reconfigure` re-applies users/languages
-
-## Useful commands
+After installation:
 
 ```sh
-docker compose ps                    # health at a glance
-docker compose logs -f arc
-scripts/backup.sh                    # live SQL dumps + application data/config archives
-make-bundle.sh                       # portable tar.gz for a one-command install elsewhere
+docker compose ps
+docker compose logs --tail=100 arc
 ```
 
-The backup script excludes live MySQL/MariaDB data directories; restore those
-databases from the SQL dumps. Files in storage and LDAP can change while the
-archive is being made, so coordinate writes or use a filesystem snapshot when
-you need a point-in-time backup.
+Open `https://<host>:8444/dcm4chee-arc/ui2` and sign in as `pacsadmin`. Find
+its password under `password_pacsadmin` in
+`secrets/INITIAL_CREDENTIALS.txt`. That file also contains the Keycloak admin
+password and the rotated passwords for the built-in PACS accounts. It is
+created with mode 600. The generated CA certificate is `certs/ca.crt`; clients
+must trust it to avoid browser certificate warnings. Resolve `<host>` through
+DNS or a hosts-file entry that points to the bind IP.
 
-## Documentation
+### Published ports
 
-- [`docs/upstream/`](docs/upstream/) — write-up of the upstream
-  `POSTGRES_JDBC_PARAMS` export bug with reproduction and fix
-  (filed as dcm4che-dockerfiles/dcm4chee-arc-psql#26).
+| Port | Service | Transport |
+| --- | --- | --- |
+| 8444 | PACS UI and DICOMweb | HTTPS |
+| 8844 | Keycloak admin and OIDC | HTTPS |
+| 9994 | WildFly console | HTTPS |
+| 11113 | DICOM, AE title `DCM4CHEE` | Plain TCP |
+| 2763 | DICOM, AE title `DCM4CHEE` | TLS with client certificate |
+| 2576 | HL7 MLLP | Plain TCP |
+| 12576 | HL7 MLLP | TLS |
 
-## Status & support
+The DICOMweb base URL is
+`https://<host>:8444/dcm4chee-arc/aets/DCM4CHEE/rs`. The archive database,
+Keycloak database and LDAP ports are internal to the Compose network.
+Published ports bind to `PUBLIC_BIND_IP` from `.env`.
 
-Tested end-to-end on a small VM: WildFly clean boot, C-ECHO, C-STORE + C-FIND, QIDO-RS
-with OIDC tokens, DICOM TLS with client certificates, live backups. Use for
-testing/evaluation; for clinical use, review everything, use your organization's CA,
-and set `innodb_flush_log_at_trx_commit = 1`.
+The installer generates a test CA. The plain DICOM and HL7 ports remain
+available, and the archive's MySQL connection is configured with `useSSL=false`.
+Limit network access accordingly. Before use with clinical data, review the
+security settings and replace the test certificates with certificates issued
+by your organization.
 
-Not affiliated with dcm4che. dcm4chee-arc is tri-licensed MPL 1.1 / GPL 2.0+ /
-LGPL 2.1+ (© dcm4che contributors and J4Care); this repository only builds and
-rearranges their official artifacts at build time and contains no dcm4che source
-beyond an MPL-licensed patched `setenv.sh` (published in full, per the MPL).
-The packaging scripts here are MIT-licensed — see [LICENSE](LICENSE) and
-[NOTICE](NOTICE.md).
+## Running it again
 
-## Contributing
+Running `python3 deploy.py` in an installation with an existing `.env` rebuilds
+the image and brings the stack up using the saved hostname, bind IP, passwords
+and certificates. It does not rotate PACS user passwords. The hostname and bind
+IP cannot be changed with command-line options on a rerun.
 
-PRs welcome — especially version bumps (bump `VERSION`/image tags in
-`build/build-image.py` and `compose.yaml`, then run the CI smoke tests) and CI
-improvements. Keep scripts POSIX-ish and dependency-light (Python 3 stdlib only).
+Use `python3 deploy.py --reconfigure` to reapply the user and LDAP settings.
+This **rotates the passwords** for `root`, `admin`, `user` and the PACS admin
+account. Read the new values from `secrets/INITIAL_CREDENTIALS.txt` after it
+finishes.
+
+`--reuse-certs-from DIR` is for a new installation and reads `DIR/.env` and
+`DIR/certs/`. Reuse the certificates only if they cover the hostname of the new
+installation. A fresh installation otherwise creates its own test CA.
+
+Run `python3 deploy.py --help` for the full option list.
+
+## Backup and bundle
+
+```sh
+scripts/backup.sh                  # writes to dist/backups/
+scripts/backup.sh /path/to/backup  # choose another destination
+make-bundle.sh                     # package the project without local data or secrets
+make-bundle.sh --full              # also include cached build/work downloads
+```
+
+The backup contains SQL dumps of `pacsdb` and Keycloak's database, an archive
+of application data, and an archive of configuration, certificates and secrets.
+Keep the output encrypted and off the host. The script excludes live MySQL and
+MariaDB data directories because their files are not restorable live copies;
+restore the databases from the SQL dumps. Files in storage and LDAP can change
+during the tar operation. Coordinate writes or use a filesystem snapshot if
+the backup needs to represent one point in time.
+
+The bundle is for installing on another machine. It excludes `.env`, secrets,
+certificates and patient data, so the new machine creates its own credentials.
+`--full` includes cached downloads from `build/work`, but Docker images still
+need to be available on the target machine. This is not an offline installer.
+
+## How the image is assembled
+
+`build/build-image.py` takes the official MySQL EAR and SQL schema from the
+dcm4chee-arc-light 5.35.1 MySQL distribution. It takes the two secure WARs,
+WildFly configuration and `setenv.sh` from
+`dcm4che/dcm4chee-arc-psql:5.35.1-secure`. The script then:
+
+1. Replaces the nonsecure archive and proxy WARs in the MySQL EAR with the
+   secure WARs and updates the deployment descriptors.
+2. Changes the `PacsDS` datasource to use MySQL and adds Connector/J 9.3.0 as
+   a WildFly module.
+3. Patches `setenv.sh` to pass `MYSQL_JDBC_PARAMS` with a leading `?` to
+   WildFly. The related upstream PostgreSQL issue is recorded in
+   [docs/upstream/](docs/upstream/).
+
+The repository does not store the downloaded EAR, SQL schema or driver JAR.
+`docker build` adds the assembled files to the upstream image.
+
+## Verification and limits
+
+CI assembles the image and validates Compose on pull requests. Pushes to
+`main` also deploy the stack and run C-ECHO, C-STORE and a QIDO-RS query against
+a synthetic study. A manual workflow run can run the same stack test.
+
+The default [MySQL settings](my.cnf) use
+`innodb_flush_log_at_trx_commit = 2`, which can lose recent transactions after
+a power failure. For clinical use, review that setting, backup and restore
+procedures, access controls, certificates and network exposure with the team
+responsible for the deployment.
+
+This project is not affiliated with dcm4che. See [NOTICE.md](NOTICE.md) for
+upstream components and [LICENSE](LICENSE) for this repository's code.

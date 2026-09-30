@@ -34,5 +34,5 @@ mv -- "$TMP"/* "$OUT"/
 
 echo ""
 ls -lh "$OUT"/*-$STAMP.* | awk '{print $9, "("$5")"}'
-echo "Done. The archive contains patient data and passwords — keep it encrypted, off-host."
+echo "Done. This backup contains patient data and passwords. Keep it encrypted and off-host."
 echo "Restore a database: docker compose exec -T mysql mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" pacsdb < pacsdb-$STAMP.sql"
