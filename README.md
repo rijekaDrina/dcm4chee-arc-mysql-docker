@@ -123,9 +123,14 @@ python3 deploy.py [--dry-run] [--yes] [--hostname H] [--bind-ip IP]
 ```sh
 docker compose ps                    # health at a glance
 docker compose logs -f arc
-scripts/backup.sh                    # live mysqldump of pacsdb+keycloak + tar of data/
+scripts/backup.sh                    # live SQL dumps + application data/config archives
 make-bundle.sh                       # portable tar.gz for a one-command install elsewhere
 ```
+
+The backup script excludes live MySQL/MariaDB data directories; restore those
+databases from the SQL dumps. Files in storage and LDAP can change while the
+archive is being made, so coordinate writes or use a filesystem snapshot when
+you need a point-in-time backup.
 
 ## Documentation
 

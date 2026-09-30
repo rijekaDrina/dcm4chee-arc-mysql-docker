@@ -77,7 +77,7 @@ def ask_yes_no(prompt: str, default: bool) -> bool:
 
 
 def detect_bind_ip() -> str:
-    result = sh("ip", "-4", "-o", "addr", "show", "scope", "global")
+    result = sh("ip", "-4", "-o", "addr", "show", "scope", "global", check=False)
     for line in result.stdout.splitlines():
         fields = line.split()
         interface = fields[1].split("@", 1)[0]
@@ -142,10 +142,34 @@ def write_env(values: dict[str, str]) -> None:
     ENV_PATH.chmod(0o600)
 
 
-def reuse_source_certs(source: Path) -> str | None:
+def read_public_env() -> tuple[str, str]:
+    """Use the address Compose will actually publish on a redeploy."""
+    values = {}
+    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        if line and not line.lstrip().startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    try:
+        return values["PUBLIC_HOST"], values["PUBLIC_BIND_IP"]
+    except KeyError as error:
+        raise SystemExit(f"existing .env is missing {error.args[0]}") from error
+
+
+def reuse_source_certs(source: Path) -> str:
     """Copy certs from another stack installation; returns its TLS keystore password."""
     needed = ("ca.crt", "ca.p12", "arc.p12", "keycloak.p12",
               "test-client.p12", "test-client.crt", "test-client.key")
+    source_env = source / ".env"
+    missing = [str(source / "certs" / name) for name in needed
+               if not (source / "certs" / name).is_file()]
+    if not source_env.is_file():
+        missing.append(str(source_env))
+    if missing:
+        raise SystemExit(f"certificate source is incomplete: {', '.join(missing)}")
+    tls_pass = next((line.split("=", 1)[1] for line in source_env.read_text().splitlines()
+                     if line.startswith("TLS_KEYSTORE_PASSWORD=")), None)
+    if not tls_pass:
+        raise SystemExit(f"{source_env} has no TLS_KEYSTORE_PASSWORD")
     for name in needed:
         shutil.copy2(source / "certs" / name, CERTS / name)
     for path in CERTS.glob("*.p12"):
@@ -154,10 +178,7 @@ def reuse_source_certs(source: Path) -> str | None:
     client = ROOT / "client"
     client.mkdir(exist_ok=True)
     shutil.copy2(source / "certs" / "ca.crt", client / "test-ca.crt")
-    for line in (source / ".env").read_text().splitlines():
-        if line.startswith("TLS_KEYSTORE_PASSWORD="):
-            return line.split("=", 1)[1]
-    return None
+    return tls_pass
 
 
 def generate_certs(hostname: str, tls_pass: str) -> None:
@@ -267,15 +288,21 @@ def ensure_prerequisites(unattended: bool) -> None:
     else:
         sh("apt-get", "update")
         sh("apt-get", "install", "-y", "ca-certificates", "curl", "gnupg", "openssl", "iproute2")
+        release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()
+                       if "=" in line and not line.startswith("#"))
+        distro = release.get("ID", "").strip('"').lower()
+        codename = release.get("VERSION_CODENAME", "").strip('"')
+        if distro not in ("ubuntu", "debian") or not codename:
+            raise SystemExit("Cannot determine the Debian/Ubuntu Docker repository.")
         keyring = Path("/etc/apt/keyrings/docker.gpg")
         keyring.parent.mkdir(parents=True, exist_ok=True)
-        sh("bash", "-c",
-           "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
-           check=False)
-        sh("bash", "-c",
-           'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] '
-           'https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" '
-           "> /etc/apt/sources.list.d/docker.list", check=False)
+        sh("bash", "-o", "pipefail", "-c",
+           f"curl -fsSL https://download.docker.com/linux/{distro}/gpg "
+           "| gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg")
+        arch = sh("dpkg", "--print-architecture").stdout.strip()
+        Path("/etc/apt/sources.list.d/docker.list").write_text(
+            f"deb [arch={arch} signed-by={keyring}] "
+            f"https://download.docker.com/linux/{distro} {codename} stable\n")
         sh("apt-get", "update")
         sh("apt-get", "install", "-y", "docker-ce", "docker-ce-cli", "containerd.io",
            "docker-buildx-plugin", "docker-compose-plugin")
@@ -318,22 +345,36 @@ def main() -> None:
     redeploy = ENV_PATH.exists()
 
     hr("1/7 Environment checks")
-    ensure_prerequisites(unattended)
-    sh("docker", "info")
-    sh("docker", "compose", "version")
-    bind_ip = args.bind_ip or (detect_bind_ip() if unattended else ask("Host IP address", detect_bind_ip()))
-    hostname = args.hostname or ("pacs.example.com" if unattended else ask("Host DNS name", "pacs.example.com"))
-    busy = ports_free(bind_ip)
-    foreign_busy = sorted(set(busy) - project_published_ports()) if redeploy else busy
-    if foreign_busy:
-        raise SystemExit(f"ports busy on {bind_ip}: {foreign_busy} — this stack needs: {STACK_PORTS}")
-    if busy:
-        print(f"Ports {sorted(set(busy))} are held by this very stack (re-deploy) — fine.")
-    print(f"OK: Docker is running; {hostname} ({bind_ip}); ports {STACK_PORTS} are free.")
+    if args.dry_run:
+        print("(dry-run) would check prerequisites, Docker and published ports")
+    else:
+        ensure_prerequisites(unattended)
+        sh("docker", "info")
+        sh("docker", "compose", "version")
+    if redeploy:
+        hostname, bind_ip = read_public_env()
+        if (args.hostname and args.hostname != hostname) or (args.bind_ip and args.bind_ip != bind_ip):
+            raise SystemExit("--hostname/--bind-ip differ from the existing .env; "
+                             "this installer does not change addresses on a redeploy")
+        print(f"Using existing .env address: {hostname} ({bind_ip}).")
+    else:
+        detected_ip = (detect_bind_ip() if not args.bind_ip and command_exists("ip")
+                       else "127.0.0.1")
+        bind_ip = args.bind_ip or (detected_ip if unattended else ask("Host IP address", detected_ip))
+        hostname = args.hostname or ("pacs.example.com" if unattended else ask("Host DNS name", "pacs.example.com"))
+    if not args.dry_run:
+        busy = ports_free(bind_ip)
+        foreign_busy = sorted(set(busy) - project_published_ports()) if redeploy else busy
+        if foreign_busy:
+            raise SystemExit(f"ports busy on {bind_ip}: {foreign_busy} — this stack needs: {STACK_PORTS}")
+        if busy:
+            print(f"Ports {sorted(set(busy))} are held by this very stack (re-deploy) — fine.")
+        print(f"OK: Docker is running; {hostname} ({bind_ip}); ports {STACK_PORTS} are free.")
 
     hr("2/7 Secrets and certificates")
-    CERTS.mkdir(mode=0o700, exist_ok=True)
-    SECRETS_DIR.mkdir(mode=0o700, exist_ok=True)
+    if not args.dry_run:
+        CERTS.mkdir(mode=0o700, exist_ok=True)
+        SECRETS_DIR.mkdir(mode=0o700, exist_ok=True)
     if redeploy:
         print(".env exists — re-deploy: secrets, certificates and data are NOT touched.")
     elif args.dry_run:
@@ -357,8 +398,7 @@ def main() -> None:
         }
         if args.reuse_certs_from:
             tls_pass = reuse_source_certs(Path(args.reuse_certs_from))
-            if tls_pass:
-                values["TLS_KEYSTORE_PASSWORD"] = tls_pass
+            values["TLS_KEYSTORE_PASSWORD"] = tls_pass
             print(f"Reused certificates from {args.reuse_certs_from}.")
         else:
             generate_certs(hostname, values["TLS_KEYSTORE_PASSWORD"])
@@ -422,7 +462,10 @@ def main() -> None:
             print("Re-deploy: users and passwords were not touched (use --reconfigure for that).")
 
     hr("7/7 Done")
-    final_report(hostname, bind_ip)
+    if args.dry_run:
+        print(f"(dry-run) would report URLs for {hostname} ({bind_ip}) and the credentials file.")
+    else:
+        final_report(hostname, bind_ip)
 
 
 if __name__ == "__main__":

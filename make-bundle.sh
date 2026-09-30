@@ -2,7 +2,7 @@
 # Build a portable bundle of this stack for a new machine.
 # Usage: ./make-bundle.sh [--full]
 #   default: without build/work (the 109 MB SourceForge zip) — deploy.py downloads it
-#   --full : include build/work too (fully offline build on an air-gapped machine)
+#   --full : include cached build/work artifacts (Docker images still need pulling)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -23,7 +23,6 @@ ARGS=(
   --exclude='./dist'
   --exclude='./.git'
   --exclude='./testdata'
-  --exclude='./build/work'
   --exclude='./build/orig'
   --exclude='./build/ui-source'
   --exclude='./build/ui-source-5.35.1.zip'
@@ -38,10 +37,9 @@ ARGS=(
 
 if [ "$FULL" -eq 0 ]; then
   echo "Packing bundle (without build/work — the new machine needs internet for SourceForge/Maven)."
+  ARGS+=(--exclude='./build/work')
 else
-  echo "Packing FULL bundle (build/work included for offline builds)."
-  # drop only the build/work exclusion
-  ARGS=("${ARGS[@]/--exclude='.\/build\/work'/}")
+  echo "Packing bundle with cached build/work artifacts (Docker images still need pulling)."
 fi
 
 tar -czf "$BUNDLE" "${ARGS[@]}" .
